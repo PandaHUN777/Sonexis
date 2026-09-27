@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <strong>Shape your system audio.</strong>
-  https://sonexis.ink
+  <strong>Shape your system audio.</strong><br>
+  <a href="https://sonexis.ink">Sonexis</a>
 </p>
 
 
