@@ -1,4 +1,4 @@
-<img width="757" height="676" alt="image" src="https://github.com/user-attachments/assets/6880dde7-8ae7-4b3a-902c-428f428b7f7b" /># Sonexis
+# Sonexis
 
 <p align="center">
   <img src="Branding/sonexis-mark.png" width="128" alt="Sonexis logo">
