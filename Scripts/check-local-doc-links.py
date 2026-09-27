@@ -13,7 +13,6 @@ from urllib.parse import unquote, urlsplit
 
 
 MAINTAINED_DOCS = ("README.md", "CONTRIBUTING.md", "docs/README.md")
-LINK_START = re.compile(r"!?\[[^\]\n]*\]\(")
 REFERENCE = re.compile(r"^\s{0,3}\[[^\]\n]+\]:\s*(<[^>\n]+>|\S+)", re.MULTILINE)
 EMAIL = re.compile(r"^[^/\s]+@[^/\s]+$")
 INLINE_CODE = re.compile(r"(?<!\x60)(\x60+).*?(?<!\x60)\1(?!\x60)", re.DOTALL)
@@ -24,7 +23,7 @@ def _blank(text: str) -> str:
 
 
 def without_code(text: str) -> str:
-    """Mask fenced and inline code while preserving Markdown link delimiters."""
+    """Mask fenced, indented, and inline code while preserving Markdown link delimiters."""
     tick = chr(96)
     fence = re.compile(rf"^ {{0,3}}({tick}{{3,}}|~{{3,}})")
     output: list[str] = []
@@ -45,6 +44,9 @@ def without_code(text: str) -> str:
             if match and match.group(1)[0] == fence_char and len(match.group(1)) >= fence_size:
                 in_fence = False
             continue
+        if line.startswith(("    ", "\t")):
+            output.append(_blank(line))
+            continue
         output.append(line)
 
     masked = "".join(output)
@@ -55,10 +57,7 @@ def markdown_targets(text: str) -> list[str]:
     masked = without_code(text)
     targets: list[str] = []
 
-    for match in LINK_START.finditer(masked):
-        target = destination_after_open_paren(masked, match.end())
-        if target:
-            targets.append(target)
+    targets.extend(inline_link_targets(masked))
 
     for match in REFERENCE.finditer(masked):
         target = match.group(1)
@@ -69,6 +68,59 @@ def markdown_targets(text: str) -> list[str]:
     parser = _HTMLTargets()
     parser.feed(masked)
     targets.extend(parser.targets)
+    return targets
+
+
+def _is_escaped(text: str, index: int) -> bool:
+    backslashes = 0
+    index -= 1
+    while index >= 0 and text[index] == "\\":
+        backslashes += 1
+        index -= 1
+    return backslashes % 2 == 1
+
+
+def inline_link_targets(text: str) -> list[str]:
+    targets: list[str] = []
+    index = 0
+
+    while index < len(text):
+        if text[index] == "[":
+            label_start = index
+        elif text[index] == "!" and text[index + 1 : index + 2] == "[":
+            label_start = index + 1
+        else:
+            index += 1
+            continue
+
+        if _is_escaped(text, label_start):
+            index = label_start + 1
+            continue
+
+        depth = 1
+        escaped = False
+        cursor = label_start + 1
+        while cursor < len(text) and text[cursor] != "\n":
+            char = text[cursor]
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == "[":
+                depth += 1
+            elif char == "]":
+                depth -= 1
+                if depth == 0:
+                    if text[cursor + 1 : cursor + 2] == "(":
+                        target = destination_after_open_paren(text, cursor + 2)
+                        if target:
+                            targets.append(target)
+                    index = cursor + 1
+                    break
+            cursor += 1
+        else:
+            index = label_start + 1
+
     return targets
 
 
@@ -188,22 +240,46 @@ def resolve_target(root: Path, source: Path, source_rel: str, target: str) -> st
     return None
 
 
+def repository_root(script_path: Path) -> Path:
+    return script_path.resolve().parent.parent
+
+
 def self_test() -> None:
     with TemporaryDirectory(prefix="sonexis-doc-links-") as temporary:
         root = Path(temporary)
         (root / "docs").mkdir()
         (root / "Scripts" / "guides").mkdir(parents=True)
         (root / "assets").mkdir()
+        script_path = root / "Scripts" / "check-local-doc-links.py"
+        script_path.touch()
+        assert repository_root(script_path) == root.resolve(), (
+            "repository root was not derived from the script location"
+        )
         (root / "docs" / "guide.md").write_text("# Guide\n", encoding="utf-8")
         (root / "assets" / "image.png").write_bytes(b"fixture")
-        (root / "README.md").write_text(
+        fence = chr(96) * 3
+        readme = (
             "[guide](docs/guide.md?view=1#start) "
             "![image](assets/image.png) "
             "[web](https://example.com/page) "
             "[email](mailto:docs@example.com)\n"
             "[reference][guide]\n\n[guide]: <docs/guide.md?mode=full#top>\n"
-            + chr(96) + "[ignored](missing-in-code.md)" + chr(96) + "\n",
-            encoding="utf-8",
+            "[x [y]](docs/guide.md)\n"
+            + r"\[escaped](missing-escaped.md)"
+            + "\n"
+            + fence
+            + "md\n[ignored](missing-fenced.md)\n"
+            + fence
+            + "\n"
+            + "    [ignored](missing-indented.md)\n"
+            + chr(96)
+            + "[ignored](missing-inline-code.md)"
+            + chr(96)
+            + "\n"
+        )
+        (root / "README.md").write_text(readme, encoding="utf-8")
+        assert "docs/guide.md" in markdown_targets("[x [y]](docs/guide.md)"), (
+            "balanced brackets in an inline-link label were not parsed"
         )
         (root / "docs" / "README.md").write_text(
             "[root](../README.md#top)\n", encoding="utf-8"
@@ -239,7 +315,7 @@ def main() -> int:
         self_test()
         return 0
 
-    errors, count = check_root(Path.cwd())
+    errors, count = check_root(repository_root(Path(__file__)))
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
